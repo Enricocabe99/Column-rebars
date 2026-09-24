@@ -1,0 +1,98 @@
+# 🏗️ Armature Pilastro 3D
+
+Applicazione web-based sviluppata con **Streamlit** per la visualizzazione 3D e la generazione di report PDF tecnici delle armature di pilastri in cemento armato. Pensata per ingegneri strutturisti, disegnatori e uffici tecnici.
+
+![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.36+-red.svg)
+![Plotly](https://img.shields.io/badge/Plotly-5.20+-purple.svg)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+
+---
+
+## ✨ Funzionalità
+
+### 🎨 Visualizzazione 3D interattiva
+- Modello 3D del pilastro con tutte le armature
+- Viste preimpostate: **3D, X–Z (fronte), Y–Z (lato), X–Y (pianta)**
+- Controlli di visibilità per ogni gruppo di armature
+- Opacità regolabile del calcestruzzo e delle mensole
+- Bordi neri opzionali per pilastro e mensole
+
+### 📐 Modellazione completa del pilastro
+- Sezione rettangolare con dimensioni e copriferro configurabili
+- **Ferri d'angolo** con diametro e accoppiamento opzionale
+- **Ferri intermedi** con distribuzione uniforme o personalizzata (interassi)
+- **Ferri aggiuntivi liberi** con mirroring automatico sui 4 lati
+
+### 🏛️ Fondazione
+- **Armatubo**: ferri longitudinali sporgenti sotto la base
+- **Plinto a bicchiere**: tratto di pilastro inglobato nella fondazione
+- Visualizzazione 3D del volume di fondazione
+
+### 🟦 Staffatura a fasce multiple
+- **Zona duttile** (base per armatubo, sopra il bicchiere)
+- **Fascia testa pilastro**
+- **Fascia armatura minima** (una o due in funzione della fondazione)
+- **Fascia nel bicchiere**
+- **Fasce infittite sopra le mensole** (con allineamento automatico al passo esistente)
+- Ogni fascia ha **Ø e passo indipendenti**
+
+### 🔗 Ganci in zona duttile
+- Legano i ferri intermedi su facce opposte
+- Diametro configurabile
+- Posizionati automaticamente nella zona duttile
+
+### 🟩 Forche alla testa pilastro
+- Forche a forma di Π disposte verticalmente
+- Adiacenti ai ferri d'angolo, dentro il copriferro
+- Diametro, numero per lato e lunghezza configurabili
+
+### 🟨 Tirafondi in testa al pilastro
+- 4 tirafondi disposti a distanza configurabile dai lati
+- Sporgenza, diametro e lunghezza di ancoraggio configurabili
+
+### 🏗️ Mensole
+- Mensole **singole** o **doppie** (specchiate)
+- Mensole **rastremate** o a spessore costante
+- Posizionabili su **4 lati** (Destra/Sinistra/Alto/Basso)
+
+### 🟫 Armatura mensole
+- **Ferri superiori** che seguono il profilo della mensola
+- Ancoraggio verticale opzionale
+- Ripiego verso il pilastro opzionale
+- **Staffe orizzontali** che avvolgono mensola e pilastro
+- **Staffe verticali** perpendicolari ai ferri superiori
+- **Tirafondi verticali** con dado metallico di ancoraggio
+
+### 📊 Riepilogo materiali
+- Volume calcestruzzo (pilastro + mensole)
+- Volume acciaio suddiviso per gruppo
+- Pesi in kN e masse in kg
+- Distinta dei ferri longitudinali
+- Percentuale geometrica di armatura
+
+### 📄 Report PDF tecnico
+- **Vista 3D** con calcestruzzo a bassa opacità
+- **Prospetto longitudinale** con quote e fasce di staffatura
+- **Sezione trasversale numerata** con ferri identificati
+- **Sagome tecniche** di staffe, ganci, forche e tirafondi
+- **Tabelle riassuntive** di tutti i ferri utilizzati
+- **Riepilogo materiali** completo
+
+### 💾 Salvataggio e caricamento
+- Salvataggio del progetto in file **`.json`** scaricabile
+- Caricamento di progetti precedentemente salvati
+- Nome e descrizione del progetto inclusi nel file
+
+---
+
+## 🚀 Installazione
+
+### Prerequisiti
+- **Python 3.11** o superiore
+- pip
+
+### Installazione delle dipendenze
+
+```bash
+pip install -r requirements.txt
