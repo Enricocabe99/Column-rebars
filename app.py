@@ -55,6 +55,20 @@ class Foundation:
     bicchiere_depth_cm: float = 120.0
 
 @dataclass
+class Taper:
+    enabled: bool = False
+    b_top_cm: float = 50.0
+    h_top_cm: float = 50.0
+    taper_length_cm: float = 60.0
+    position: str = "centered"   # "centered", "x+", "x-", "y+", "y-"
+    offset_cm: float = 0.0
+    head_rebar_anchorage_cm: float = 50.0
+    head_rebar_side_xp: bool = True
+    head_rebar_side_xn: bool = True
+    head_rebar_side_yp: bool = True
+    head_rebar_side_yn: bool = True
+
+@dataclass
 class Hooks:
     enabled: bool = False
     diameter_mm: float = 8.0
@@ -138,6 +152,7 @@ class ColumnModel:
     longitudinal: LongitudinalLayout = field(default_factory=LongitudinalLayout)
     stirrups: Stirrups = field(default_factory=Stirrups)
     foundation: Foundation = field(default_factory=Foundation)
+    taper: Taper = field(default_factory=Taper)
     forks: Forks = field(default_factory=Forks)
     tie_rods: TieRod = field(default_factory=TieRod)
     mensole: list = field(default_factory=list)
@@ -149,6 +164,11 @@ DEFAULT_PARAMS = {
     "nome_progetto": "", "descrizione_progetto": "",
     "b_cm": 70.0, "h_cm": 70.0, "H_cm": 400.0, "cover": 3.0,
     "tipo_fond": "nessuna", "anchorage": 40.0, "bicchiere_depth": 120.0,
+    "taper_enabled": False, "taper_b_top": 50.0, "taper_h_top": 50.0,
+    "taper_length": 60.0, "taper_position": "centered", "taper_offset": 0.0,
+    "taper_head_anchorage": 50.0,
+    "taper_head_side_xp": True, "taper_head_side_xn": True,
+    "taper_head_side_yp": True, "taper_head_side_yn": True,
     "d_corner": 26.0, "coupled_corner": False,
     "n_int": 2, "d_int": 24.0, "coupled_int": False,
     "spacing_mode_ui": "Uniforme", "custom_txt": "",
@@ -203,7 +223,12 @@ def widget_key(base):
 
 
 def _apply_loaded_params(params):
-    st.session_state.loaded_params = dict(params)
+    p = dict(params)
+    if "taper_centered" in p and "taper_position" not in p:
+        p.pop("taper_centered")
+        p["taper_position"] = "centered"
+        p.setdefault("taper_offset", 0.0)
+    st.session_state.loaded_params = p
     st.session_state.load_token += 1
 
 
@@ -263,7 +288,37 @@ def _reset_mensole_from_list(mensole_data):
 
 
 # ============================================================
-# 2) GEOMETRIA DI BASE
+# 2) SEZIONE A QUOTA z (con testa a sezione costante)
+# ============================================================
+def _head_origin(m: ColumnModel):
+    cx = (m.b_cm - m.taper.b_top_cm) / 2.0
+    cy = (m.h_cm - m.taper.h_top_cm) / 2.0
+    pos = m.taper.position
+    off = m.taper.offset_cm
+    dx = dy = 0.0
+    if pos == "x+":
+        dx = off
+    elif pos == "x-":
+        dx = -off
+    elif pos == "y+":
+        dy = off
+    elif pos == "y-":
+        dy = -off
+    return cx + dx, cy + dy
+
+
+def _section_at_z(m: ColumnModel, z: float):
+    if not m.taper.enabled or m.taper.taper_length_cm <= 0:
+        return m.b_cm, m.h_cm, 0.0, 0.0
+    z_taper_start = m.H_cm - m.taper.taper_length_cm
+    if z <= z_taper_start:
+        return m.b_cm, m.h_cm, 0.0, 0.0
+    x0_top, y0_top = _head_origin(m)
+    return m.taper.b_top_cm, m.taper.h_top_cm, x0_top, y0_top
+
+
+# ============================================================
+# 3) GEOMETRIA DI BASE
 # ============================================================
 def cylinder_geometry(p1, p2, radius, n_seg=10):
     p1 = np.asarray(p1, float); p2 = np.asarray(p2, float)
@@ -339,6 +394,37 @@ def box_geometry(x0, y0, z0, dx, dy, dz):
         [0, 3, 7], [0, 7, 4], [1, 2, 6], [1, 6, 5]])
     return v, f
 
+def build_concrete_geometry(m: ColumnModel):
+    geoms = []
+    if not m.taper.enabled or m.taper.taper_length_cm <= 0:
+        v, f = box_geometry(0, 0, 0, m.b_cm, m.h_cm, m.H_cm)
+        geoms.append((v, f))
+        return geoms
+    z_start = max(m.H_cm - m.taper.taper_length_cm, 0.0)
+    if z_start > 0:
+        v, f = box_geometry(0, 0, 0, m.b_cm, m.h_cm, z_start)
+        geoms.append((v, f))
+    x0_top, y0_top = _head_origin(m)
+    dz_head = m.H_cm - z_start
+    if dz_head > 0:
+        v, f = box_geometry(x0_top, y0_top, z_start,
+                            m.taper.b_top_cm, m.taper.h_top_cm, dz_head)
+        geoms.append((v, f))
+    return geoms
+
+def build_concrete_edges(m: ColumnModel):
+    if not m.taper.enabled or m.taper.taper_length_cm <= 0:
+        return build_box_edges(0, 0, 0, m.b_cm, m.h_cm, m.H_cm)
+    z_start = max(m.H_cm - m.taper.taper_length_cm, 0.0)
+    x0_top, y0_top = _head_origin(m)
+    edges = build_box_edges(0, 0, 0, m.b_cm, m.h_cm, z_start)
+    dz_head = m.H_cm - z_start
+    if dz_head > 0:
+        edges += build_box_edges(x0_top, y0_top, z_start,
+                                 m.taper.b_top_cm, m.taper.h_top_cm,
+                                 dz_head)
+    return edges
+
 def build_box_edges(x0, y0, z0, dx, dy, dz):
     v = [
         (x0, y0, z0), (x0 + dx, y0, z0),
@@ -363,7 +449,7 @@ def _max_stirrup_d_cm(m):
     ) / 10.0
 
 # ============================================================
-# 3) FERRI LONGITUDINALI
+# 4) FERRI LONGITUDINALI
 # ============================================================
 def _custom_offsets(spacings, n, span):
     spacings = list(spacings)[:n]
@@ -389,12 +475,86 @@ def _get_bar_z_range(model):
     z_top = model.H_cm - model.cover_cm
     return z_bot, z_top
 
-def build_longitudinal_bars(m: ColumnModel):
-    b, h, H, cover = m.b_cm, m.h_cm, m.H_cm, m.cover_cm
+def _bar_fits_in_head(m: ColumnModel, px: float, py: float, d_cm: float) -> bool:
+    if not m.taper.enabled or m.taper.taper_length_cm <= 0:
+        return True
+    x0, y0 = _head_origin(m)
+    ds = _max_stirrup_d_cm(m)
+    margin = m.cover_cm + ds + d_cm / 2.0
+    bx0 = x0 + margin
+    bx1 = x0 + m.taper.b_top_cm - margin
+    by0 = y0 + margin
+    by1 = y0 + m.taper.h_top_cm - margin
+    return (bx0 <= px <= bx1) and (by0 <= py <= by1)
+
+
+def _compute_bend_target(m, px, py, d_cm):
+    x0, y0 = _head_origin(m)
+    ds = _max_stirrup_d_cm(m)
+    margin = m.cover_cm + ds + d_cm / 2.0
+    bx0 = x0 + margin
+    bx1 = x0 + m.taper.b_top_cm - margin
+    by0 = y0 + margin
+    by1 = y0 + m.taper.h_top_cm - margin
+    cx_head = x0 + m.taper.b_top_cm / 2.0
+    cy_head = y0 + m.taper.h_top_cm / 2.0
+    tx = px if bx0 <= px <= bx1 else cx_head
+    ty = py if by0 <= py <= by1 else cy_head
+    return tx, ty
+
+
+def _bent_bar_segments(m, px, py, z0, z_stop, d_cm):
+    """Ferro piegato a 90° verso l'interno della testa.
+
+    Forma della piega (specchiata rispetto alla precedente):
+    - Tratto verticale da z0 fino a (z_stop - R)
+    - Arco di 90° con centro a (px + R*ux, py + R*uy, z_stop - R):
+        parte da (px, py, z_stop - R) con direzione +z
+        arriva a (px + R*ux, py + R*uy, z_stop) con direzione orizzontale
+    - Tratto orizzontale a quota z_stop fino a (tx, ty)
+    """
+    tx, ty = _compute_bend_target(m, px, py, d_cm)
+    dx = tx - px
+    dy = ty - py
+    L_h = float(np.hypot(dx, dy))
+
+    if L_h < 1e-3:
+        return [((px, py, z0), (px, py, z_stop), d_cm)]
+
+    ux, uy = dx / L_h, dy / L_h
+
+    R = max(2.5 * d_cm, 3.0)
+    R = min(R, L_h * 0.4)
+
+    if z_stop - R <= z0 + d_cm:
+        # Non c'è spazio per la piega: taglio dritto
+        return [((px, py, z0), (px, py, z_stop), d_cm)]
+
+    segs = []
+    # Tratto verticale fino a (z_stop - R)
+    segs.append(((px, py, z0), (px, py, z_stop - R), d_cm))
+
+    # Arco: da (px, py, z_stop - R) a (px+R*ux, py+R*uy, z_stop)
+    n_arc = 8
+    prev = (px, py, z_stop - R)
+    for i in range(1, n_arc + 1):
+        theta = np.pi / 2 * i / n_arc
+        p_i = (px + R * ux * (1 - np.cos(theta)),
+               py + R * uy * (1 - np.cos(theta)),
+               z_stop - R + R * np.sin(theta))
+        segs.append((prev, p_i, d_cm))
+        prev = p_i
+
+    # Tratto orizzontale a quota z_stop
+    segs.append((prev, (tx, ty, z_stop), d_cm))
+    return segs
+
+
+def _existing_bar_positions_in_head(m):
+    b, h, cover = m.b_cm, m.h_cm, m.cover_cm
     lon = m.longitudinal
     ds = _max_stirrup_d_cm(m)
-    z0, z1 = _get_bar_z_range(m)
-    bars = []
+    positions = []
 
     dc = lon.corner.diameter_mm / 10.0
     off_c = cover + ds + dc / 2
@@ -407,9 +567,215 @@ def build_longitudinal_bars(m: ColumnModel):
             for s in (-0.5, 0.5):
                 px = cx + s * dc * dx
                 py = cy + s * dc * dy
-                bars.append(((px, py, z0), (px, py, z1), dc))
+                if _bar_fits_in_head(m, px, py, dc):
+                    positions.append((px, py, dc))
         else:
-            bars.append(((cx, cy, z0), (cx, cy, z1), dc))
+            if _bar_fits_in_head(m, cx, cy, dc):
+                positions.append((cx, cy, dc))
+
+    di = lon.intermediate.diameter_mm / 10.0
+    off_i = cover + ds + di / 2
+    span_b = b - 2 * off_c
+    span_h = h - 2 * off_c
+
+    faces = [
+        (1, off_i,         off_c,     +1, span_b),
+        (0, b - off_i,     off_c,     +1, span_h),
+        (1, h - off_i,     b - off_c, -1, span_b),
+        (0, off_i,         h - off_c, -1, span_h),
+    ]
+
+    if lon.intermediate.n_bars > 0:
+        if lon.intermediate.spacing_mode == "uniform":
+            offs_b = list(np.linspace(0, span_b, lon.intermediate.n_bars + 2)[1:-1])
+            offs_h = list(np.linspace(0, span_h, lon.intermediate.n_bars + 2)[1:-1])
+        else:
+            offs_b = _custom_offsets(lon.intermediate.custom_spacings,
+                                     lon.intermediate.n_bars, span_b)
+            offs_h = _custom_offsets(lon.intermediate.custom_spacings,
+                                     lon.intermediate.n_bars, span_h)
+
+        for fixed_axis, perp, ref, dir_sign, span in faces:
+            offs = offs_b if fixed_axis == 1 else offs_h
+            for off in offs:
+                pa = ref + dir_sign * off
+                if fixed_axis == 1:
+                    px, py = pa, perp
+                else:
+                    px, py = perp, pa
+                if lon.intermediate.coupled:
+                    half = di / 2
+                    for s in (-half, half):
+                        if fixed_axis == 1:
+                            ppx, ppy = px + s, py
+                        else:
+                            ppx, ppy = px, py + s
+                        if _bar_fits_in_head(m, ppx, ppy, di):
+                            positions.append((ppx, ppy, di))
+                else:
+                    if _bar_fits_in_head(m, px, py, di):
+                        positions.append((px, py, di))
+
+    return positions
+
+
+def _build_head_extra_bars(m, d_cm_for_corners):
+    """Genera i ferri aggiuntivi sul perimetro della testa.
+
+    - Ferri d'angolo (uno per angolo della testa) se almeno uno dei due
+      lati adiacenti è selezionato e se non c'è già un ferro del pilastro
+      sotto che rientra nella testa vicino a quell'angolo.
+    - Ferri intermedi su ciascuna faccia selezionata (stesso numero/
+      accoppiamento dei ferri intermedi del pilastro sotto), diametro = d_int.
+    Ancoraggio verticale verso il basso: m.taper.head_rebar_anchorage_cm.
+    """
+    if not m.taper.enabled or m.taper.taper_length_cm <= 0:
+        return []
+
+    z_start = m.H_cm - m.taper.taper_length_cm
+    z_anchor = max(z_start - m.taper.head_rebar_anchorage_cm, 0.0)
+    z_top = m.H_cm - m.cover_cm
+    if z_top <= z_anchor + 1e-3:
+        return []
+
+    x0, y0 = _head_origin(m)
+    b_top = m.taper.b_top_cm
+    h_top = m.taper.h_top_cm
+    cover = m.cover_cm
+    ds = _max_stirrup_d_cm(m)
+    di = m.longitudinal.intermediate.diameter_mm / 10.0
+    dc = m.longitudinal.corner.diameter_mm / 10.0
+
+    off = cover + ds + di / 2.0
+
+    sel_map = {
+        "xp": m.taper.head_rebar_side_xp,
+        "xn": m.taper.head_rebar_side_xn,
+        "yp": m.taper.head_rebar_side_yp,
+        "yn": m.taper.head_rebar_side_yn,
+    }
+
+    existing = _existing_bar_positions_in_head(m)
+    TOL = 3.0  # cm
+
+    def is_existing(cx, cy):
+        for (ex, ey, _ed) in existing:
+            if (cx - ex) ** 2 + (cy - ey) ** 2 < TOL ** 2:
+                return True
+        return False
+
+    segs = []
+
+    # --- Ferri d'angolo della testa ---
+    off_corner = cover + ds + dc / 2.0
+    corner_data = [
+        (x0 + off_corner, y0 + off_corner,                     "xn", "yn"),
+        (x0 + b_top - off_corner, y0 + off_corner,             "xp", "yn"),
+        (x0 + b_top - off_corner, y0 + h_top - off_corner,     "xp", "yp"),
+        (x0 + off_corner, y0 + h_top - off_corner,             "xn", "yp"),
+    ]
+    corner_coupled = m.longitudinal.corner.coupled
+    for (cx, cy, s1, s2) in corner_data:
+        if not (sel_map[s1] or sel_map[s2]):
+            continue
+        if is_existing(cx, cy):
+            continue
+        if corner_coupled:
+            half = dc / 2
+            segs.append(((cx - half, cy, z_anchor), (cx - half, cy, z_top), dc))
+            segs.append(((cx + half, cy, z_anchor), (cx + half, cy, z_top), dc))
+        else:
+            segs.append(((cx, cy, z_anchor), (cx, cy, z_top), dc))
+
+    # --- Ferri intermedi sulle facce selezionate ---
+    n_int = m.longitudinal.intermediate.n_bars
+    if n_int <= 0:
+        return segs
+
+    span_b = b_top - 2 * off
+    span_h = h_top - 2 * off
+    if span_b <= 0 or span_h <= 0:
+        return segs
+
+    if m.longitudinal.intermediate.spacing_mode == "uniform":
+        offs_b = list(np.linspace(0, span_b, n_int + 2)[1:-1])
+        offs_h = list(np.linspace(0, span_h, n_int + 2)[1:-1])
+    else:
+        offs_b = _custom_offsets(m.longitudinal.intermediate.custom_spacings, n_int, span_b)
+        offs_h = _custom_offsets(m.longitudinal.intermediate.custom_spacings, n_int, span_h)
+
+    coupled_i = m.longitudinal.intermediate.coupled
+
+    def _emit(px, py, axis):
+        if coupled_i:
+            half = di / 2
+            for s in (-half, half):
+                if axis == 'x':
+                    ccx, ccy = px + s, py
+                else:
+                    ccx, ccy = px, py + s
+                if not is_existing(ccx, ccy):
+                    segs.append(((ccx, ccy, z_anchor), (ccx, ccy, z_top), di))
+        else:
+            if not is_existing(px, py):
+                segs.append(((px, py, z_anchor), (px, py, z_top), di))
+
+    # Faccia y = y0 + off (lato yn) → accoppiati lungo x
+    if sel_map["yn"]:
+        for ob in offs_b:
+            _emit(x0 + off + ob, y0 + off, 'x')
+    # Faccia y = y0 + h_top - off (lato yp) → accoppiati lungo x
+    if sel_map["yp"]:
+        for ob in offs_b:
+            _emit(x0 + off + ob, y0 + h_top - off, 'x')
+    # Faccia x = x0 + off (lato xn) → accoppiati lungo y
+    if sel_map["xn"]:
+        for oh in offs_h:
+            _emit(x0 + off, y0 + off + oh, 'y')
+    # Faccia x = x0 + b_top - off (lato xp) → accoppiati lungo y
+    if sel_map["xp"]:
+        for oh in offs_h:
+            _emit(x0 + b_top - off, y0 + off + oh, 'y')
+
+    return segs
+
+
+def _finalize_bar(m, px, py, z0, z1, d_cm):
+    if not m.taper.enabled or m.taper.taper_length_cm <= 0:
+        return [((px, py, z0), (px, py, z1), d_cm)]
+    z_taper_start = m.H_cm - m.taper.taper_length_cm
+    if _bar_fits_in_head(m, px, py, d_cm):
+        return [((px, py, z0), (px, py, z1), d_cm)]
+    z_stop = z_taper_start - m.cover_cm
+    if z_stop <= z0 + 1e-6:
+        return []
+    return _bent_bar_segments(m, px, py, z0, z_stop, d_cm)
+
+def build_longitudinal_bars(m: ColumnModel):
+    b, h, H, cover = m.b_cm, m.h_cm, m.H_cm, m.cover_cm
+    lon = m.longitudinal
+    ds = _max_stirrup_d_cm(m)
+    z0, z1 = _get_bar_z_range(m)
+    bars = []
+
+    def add_bar(px, py, d_cm):
+        segs = _finalize_bar(m, px, py, z0, z1, d_cm)
+        bars.extend(segs)
+
+    dc = lon.corner.diameter_mm / 10.0
+    off_c = cover + ds + dc / 2
+    corner_xy = [(off_c, off_c), (b - off_c, off_c),
+                 (b - off_c, h - off_c), (off_c, h - off_c)]
+    face_dirs = [(1, 0), (0, 1), (-1, 0), (0, -1)]
+
+    for (cx, cy), (dx, dy) in zip(corner_xy, face_dirs):
+        if lon.corner.coupled:
+            for s in (-0.5, 0.5):
+                px = cx + s * dc * dx
+                py = cy + s * dc * dy
+                add_bar(px, py, dc)
+        else:
+            add_bar(cx, cy, dc)
 
     di = lon.intermediate.diameter_mm / 10.0
     off_i = cover + ds + di / 2
@@ -444,13 +810,13 @@ def build_longitudinal_bars(m: ColumnModel):
                 if lon.intermediate.coupled:
                     half = di / 2
                     if fixed_axis == 1:
-                        bars.append(((px - half, py, z0), (px - half, py, z1), di))
-                        bars.append(((px + half, py, z0), (px + half, py, z1), di))
+                        add_bar(px - half, py, di)
+                        add_bar(px + half, py, di)
                     else:
-                        bars.append(((px, py - half, z0), (px, py - half, z1), di))
-                        bars.append(((px, py + half, z0), (px, py + half, z1), di))
+                        add_bar(px, py - half, di)
+                        add_bar(px, py + half, di)
                 else:
-                    bars.append(((px, py, z0), (px, py, z1), di))
+                    add_bar(px, py, di)
 
     for extra in lon.extras:
         de = extra.diameter_mm / 10.0
@@ -472,7 +838,7 @@ def build_longitudinal_bars(m: ColumnModel):
                         px, py = pa, perp
                     else:
                         px, py = perp, pa
-                    bars.append(((px, py, z0), (px, py, z1), de))
+                    add_bar(px, py, de)
         else:
             name, fixed_axis, perp, ref, dir_sign, span = faces_e[0]
             pa = ref + dir_sign * d
@@ -480,12 +846,16 @@ def build_longitudinal_bars(m: ColumnModel):
                 px, py = pa, perp
             else:
                 px, py = perp, pa
-            bars.append(((px, py, z0), (px, py, z1), de))
+            add_bar(px, py, de)
+
+    # Ferri aggiuntivi sul perimetro della testa rastremata
+    head_extra = _build_head_extra_bars(m, dc)
+    bars.extend(head_extra)
 
     return bars
 
 # ============================================================
-# 4) FASCE DI STAFFATURA
+# 5) FASCE DI STAFFATURA
 # ============================================================
 def get_stirrup_zones(model):
     cover = model.cover_cm
@@ -512,8 +882,20 @@ def get_stirrup_zones(model):
 
     return [(n, z0, z1) for (n, z0, z1) in zones if z1 > z0]
 
+def _stirrup_rect_at_z(m: ColumnModel, z: float, ds: float, cover: float):
+    b_z, h_z, x0_z, y0_z = _section_at_z(m, z)
+    r = ds / 2
+    x0 = x0_z + cover + r
+    x1 = x0_z + b_z - cover - r
+    y0 = y0_z + cover + r
+    y1 = y0_z + h_z - cover - r
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+
 def build_stirrups(m: ColumnModel):
-    b, h, H, cover = m.b_cm, m.h_cm, m.H_cm, m.cover_cm
+    H = m.H_cm
+    cover = m.cover_cm
     zones = get_stirrup_zones(m)
     zone_cfgs = {
         "ductile":  m.stirrups.ductile,
@@ -528,12 +910,9 @@ def build_stirrups(m: ColumnModel):
     for name, z0, z1 in zones:
         cfg = zone_cfgs[name]
         ds = cfg.diameter_mm / 10.0
-        r = ds / 2
-        x0, x1 = cover + r, b - cover - r
-        y0, y1 = cover + r, h - cover - r
 
-        z_start_eff = max(z0, cover + r)
-        z_end_eff = min(z1, H - cover - r)
+        z_start_eff = max(z0, cover + ds / 2)
+        z_end_eff = min(z1, H - cover - ds / 2)
         if z_end_eff - z_start_eff < 1e-3:
             continue
 
@@ -541,12 +920,14 @@ def build_stirrups(m: ColumnModel):
         n = max(1, int(round((z_end_eff - z_start_eff) / pitch)))
         z_levels = np.linspace(z_start_eff, z_end_eff, n + 1)
 
-        corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
         for z in z_levels:
             key = round(float(z), 3)
             if key in seen_z:
                 continue
             seen_z.add(key)
+            corners = _stirrup_rect_at_z(m, z, ds, cover)
+            if corners is None:
+                continue
             for i in range(4):
                 a = corners[i]; b_ = corners[(i + 1) % 4]
                 segs.append(((a[0], a[1], z), (b_[0], b_[1], z), ds))
@@ -572,11 +953,6 @@ def build_dense_stirrups(m: ColumnModel, base_stirrups):
     zone_len = dz.length_cm if dz.length_cm > 0 else default_len
 
     ds = dz.diameter_mm / 10.0
-    r = ds / 2
-    x0, x1 = m.cover_cm + r, m.b_cm - m.cover_cm - r
-    y0, y1 = m.cover_cm + r, m.h_cm - m.cover_cm - r
-    corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
-
     segs = []
     seen = set()
 
@@ -613,6 +989,9 @@ def build_dense_stirrups(m: ColumnModel, base_stirrups):
                 if not (z_low - 0.01 <= z_new <= z_high + 0.01):
                     continue
                 seen.add(key)
+                corners = _stirrup_rect_at_z(m, z_new, ds, m.cover_cm)
+                if corners is None:
+                    continue
                 for j in range(4):
                     a = corners[j]; b_ = corners[(j + 1) % 4]
                     segs.append(((a[0], a[1], z_new), (b_[0], b_[1], z_new), ds))
@@ -625,7 +1004,7 @@ def build_all_stirrups(m: ColumnModel):
     return base, dense
 
 # ============================================================
-# 5) GANCI
+# 6) GANCI
 # ============================================================
 def _get_ductile_zone(model):
     Ld = model.stirrups.ductile_zone_length_cm
@@ -668,46 +1047,58 @@ def build_hooks(m: ColumnModel, stirrup_segments):
 
     segs = []
     for z in z_ductile:
+        b_z, h_z, x0_z, y0_z = _section_at_z(m, z)
         for x_off in offsets_b:
-            x = off_c + x_off
-            segs.append(((x, off_i, z), (x, h - off_i, z), dh))
+            x = x0_z + off_c + x_off
+            segs.append(((x, y0_z + off_i, z),
+                         (x, y0_z + h_z - off_i, z), dh))
         for y_off in offsets_h:
-            y = off_c + y_off
-            segs.append(((off_i, y, z), (b - off_i, y, z), dh))
+            y = y0_z + off_c + y_off
+            segs.append(((x0_z + off_i, y, z),
+                         (x0_z + b_z - off_i, y, z), dh))
     return segs
 
 # ============================================================
-# 6) FORCHE
+# 7) FORCHE
 # ============================================================
 def build_forks(m: ColumnModel):
     f = m.forks
     if not f.enabled or f.n_per_side <= 0:
         return []
 
-    b, h, H, cover = m.b_cm, m.h_cm, m.H_cm, m.cover_cm
+    H = m.H_cm
+    cover = m.cover_cm
     ds = _max_stirrup_d_cm(m)
     df = f.diameter_mm / 10.0
     dc = m.longitudinal.corner.diameter_mm / 10.0
     L = f.length_cm
 
+    b_z, h_z, x0_z, y0_z = _section_at_z(m, H)
+
     z_top = (H - cover) + df / 2
     z_bot = max(z_top - L, cover + df / 2)
 
     R_piega = max(2.5 * df, 3.0)
-    R_piega = min(R_piega, max((b - 2 * cover - ds) / 4, 1.0),
-                          max((h - 2 * cover - ds) / 4, 1.0))
+    R_piega = min(R_piega,
+                  max((b_z - 2 * cover - ds) / 4, 1.0),
+                  max((h_z - 2 * cover - ds) / 4, 1.0))
 
-    off_x = cover + ds + df / 2
-    off_y = cover + ds + df / 2
+    off_x = x0_z + cover + ds + df / 2
+    off_y = y0_z + cover + ds + df / 2
     corner_off_along = cover + ds + dc + df
+
+    x_min_face = x0_z + corner_off_along
+    x_max_face = x0_z + b_z - corner_off_along
+    y_min_face = y0_z + corner_off_along
+    y_max_face = y0_z + h_z - corner_off_along
 
     n = f.n_per_side
     if n == 1:
-        y_centers = [(corner_off_along + (h - corner_off_along)) / 2]
-        x_centers = [(corner_off_along + (b - corner_off_along)) / 2]
+        y_centers = [(y_min_face + y_max_face) / 2]
+        x_centers = [(x_min_face + x_max_face) / 2]
     else:
-        y_centers = list(np.linspace(corner_off_along, h - corner_off_along, n))
-        x_centers = list(np.linspace(corner_off_along, b - corner_off_along, n))
+        y_centers = list(np.linspace(y_min_face, y_max_face, n))
+        x_centers = list(np.linspace(x_min_face, x_max_face, n))
 
     segs = []
     n_arc = 4
@@ -757,30 +1148,34 @@ def build_forks(m: ColumnModel):
             segs.append((p1, p2, df))
 
     for y in y_centers:
-        add_fork_x_normal(y, off_x, b - off_x)
+        add_fork_x_normal(y, off_x, x0_z + b_z - cover - ds - df / 2)
     for x in x_centers:
-        add_fork_y_normal(x, off_y, h - off_y)
+        add_fork_y_normal(x, off_y, y0_z + h_z - cover - ds - df / 2)
 
     return segs
 
 # ============================================================
-# 7) TIRAFONDI (nel pilastro)
+# 8) TIRAFONDI
 # ============================================================
 def build_tie_rods(m: ColumnModel):
     tr = m.tie_rods
     if not tr.enabled:
         return []
 
-    b, h, H = m.b_cm, m.h_cm, m.H_cm
+    H = m.H_cm
     dt = tr.diameter_mm / 10.0
     off = tr.offset_cm
+
+    b_z, h_z, x0_z, y0_z = _section_at_z(m, H)
 
     z_bot = max(H - tr.embedment_cm, 0.0)
     z_top = H + tr.protrusion_cm
 
     positions = [
-        (off, off), (b - off, off),
-        (b - off, h - off), (off, h - off),
+        (x0_z + off,     y0_z + off),
+        (x0_z + b_z - off, y0_z + off),
+        (x0_z + b_z - off, y0_z + h_z - off),
+        (x0_z + off,     y0_z + h_z - off),
     ]
 
     segs = []
@@ -789,7 +1184,7 @@ def build_tie_rods(m: ColumnModel):
     return segs
 
 # ============================================================
-# 8) MENSOLE — MESH SOLIDA
+# 9) MENSOLE — MESH SOLIDA
 # ============================================================
 def _mensola_vertices(b, h, H, m_dict):
     S = m_dict["sporgenza_cm"]
@@ -897,7 +1292,7 @@ def build_mensole_edges(m: ColumnModel):
     return edges
 
 # ============================================================
-# 9) ARMATURA MENSOLE
+# 10) ARMATURA MENSOLE
 # ============================================================
 def _setup_side(m, men):
     S = men.sporgenza_cm
@@ -1273,7 +1668,7 @@ def build_mensole_rebar(m: ColumnModel):
     return all_top, all_sh, all_sv, all_tir
 
 # ============================================================
-# 10) VISTE PREIMPOSTATE
+# 11) VISTE PREIMPOSTATE
 # ============================================================
 def compute_camera(preset, b, h, H_eff, zoom_factor=1.0):
     max_span = max(b, h, H_eff)
@@ -1307,7 +1702,7 @@ def compute_camera(preset, b, h, H_eff, zoom_factor=1.0):
     )
 
 # ============================================================
-# 11) CALCOLO MATERIALI
+# 12) CALCOLO MATERIALI
 # ============================================================
 def _cyl_volume_cm3(p1, p2, d_cm):
     p1 = np.asarray(p1, float)
@@ -1327,10 +1722,18 @@ def _mensola_volume_cm3(men: Mensola):
         return S * W * (h_tip + h_base) / 2.0
     return S * W * h_tip
 
+def _pilastro_volume_cm3(m: ColumnModel):
+    if not m.taper.enabled or m.taper.taper_length_cm <= 0:
+        return m.b_cm * m.h_cm * m.H_cm
+    z_start = max(m.H_cm - m.taper.taper_length_cm, 0.0)
+    V_low = m.b_cm * m.h_cm * z_start
+    V_head = m.taper.b_top_cm * m.taper.h_top_cm * (m.H_cm - z_start)
+    return V_low + V_head
+
 def compute_material_quantities(model: ColumnModel):
     b, h, H = model.b_cm, model.h_cm, model.H_cm
 
-    V_pilastro_cm3 = b * h * H
+    V_pilastro_cm3 = _pilastro_volume_cm3(model)
     V_mensole_cm3 = 0.0
     for men in model.mensole:
         v_men = _mensola_volume_cm3(men)
@@ -1411,7 +1814,7 @@ def compute_material_quantities(model: ColumnModel):
     }
 
 # ============================================================
-# 12) SERIALIZZAZIONE / SALVATAGGIO
+# 13) SERIALIZZAZIONE / SALVATAGGIO
 # ============================================================
 def build_export_dict():
     params = st.session_state.get("_current_params", {})
@@ -1422,7 +1825,7 @@ def build_export_dict():
         safe_params[k] = v
 
     data = {
-        "version": 1,
+        "version": 2,
         "timestamp": datetime.datetime.now().isoformat(),
         "project_name": safe_params.get("nome_progetto", ""),
         "project_description": safe_params.get("descrizione_progetto", ""),
@@ -1453,7 +1856,7 @@ def build_export_dict():
     return data
 
 # ============================================================
-# 13) LAYOUT
+# 14) LAYOUT
 # ============================================================
 col_left, col_right = st.columns([1, 1.6], gap="medium")
 
@@ -1791,6 +2194,160 @@ with col_left:
     # ------------------------------------------------------------
     with tab_fork:
         st.markdown("#### 🟩 Testa pilastro")
+
+        st.markdown("##### 🔻 Tratto in testa (sezione ridotta)")
+        taper_enabled = st.checkbox(
+            "Abilita tratto in testa a sezione ridotta",
+            value=bool(get_param("taper_enabled", False)),
+            key=widget_key("taper_enabled"),
+            help="L'ultimo tratto del pilastro ha sezione costante "
+                 "(b_top × h_top), con spigolo vivo rispetto alla sezione "
+                 "di base.")
+
+        if taper_enabled:
+            with st.expander("Parametri del tratto in testa", expanded=True):
+                t1, t2, t3 = st.columns(3)
+                taper_b_top = t1.number_input(
+                    "b in testa [cm]", 10.0, 300.0,
+                    float(get_param("taper_b_top", 50.0)), 5.0,
+                    key=widget_key("taper_b_top"),
+                    help="Larghezza della sezione del tratto in testa.")
+                taper_h_top = t2.number_input(
+                    "h in testa [cm]", 10.0, 300.0,
+                    float(get_param("taper_h_top", 50.0)), 5.0,
+                    key=widget_key("taper_h_top"),
+                    help="Profondità della sezione del tratto in testa.")
+                taper_length = t3.number_input(
+                    "Lunghezza tratto in testa [cm]", 10.0, 1000.0,
+                    float(get_param("taper_length", 60.0)), 5.0,
+                    key=widget_key("taper_length"),
+                    help="Altezza del parallelepipedo in testa, misurata "
+                         "a partire dalla sommità del pilastro.")
+
+                pos_labels = ["Centrata", "Destra (+X)", "Sinistra (−X)",
+                              "Alto (+Y)", "Basso (−Y)"]
+                pos_keys = ["centered", "x+", "x-", "y+", "y-"]
+                cur_pos = get_param("taper_position", "centered")
+                cur_idx = pos_keys.index(cur_pos) if cur_pos in pos_keys else 0
+                taper_pos_ui = st.radio(
+                    "Posizionamento della testa",
+                    pos_labels, index=cur_idx, horizontal=True,
+                    key=widget_key("taper_pos"))
+                taper_position = pos_keys[pos_labels.index(taper_pos_ui)]
+
+                if taper_position == "centered":
+                    taper_offset = 0.0
+                    st.caption("ℹ️ Testa centrata rispetto alla sezione di base.")
+                else:
+                    taper_offset = st.number_input(
+                        "Offset [cm]", 0.0, 300.0,
+                        float(get_param("taper_offset", 0.0)), 1.0,
+                        key=widget_key("taper_offset"),
+                        help="Spostamento della testa nella direzione scelta.")
+
+                if (taper_b_top > b_cm) or (taper_h_top > h_cm):
+                    st.warning("⚠️ La sezione in testa è più grande di quella "
+                               "alla base.")
+                if taper_length > H_cm:
+                    st.warning("⚠️ Il tratto in testa supera l'altezza del "
+                               "pilastro: sarà limitato all'altezza totale.")
+
+                z_start = max(0.0, H_cm - taper_length)
+                cx = (b_cm - taper_b_top) / 2.0
+                cy = (h_cm - taper_h_top) / 2.0
+                dx = dy = 0.0
+                if taper_position == "x+":
+                    dx = taper_offset
+                elif taper_position == "x-":
+                    dx = -taper_offset
+                elif taper_position == "y+":
+                    dy = taper_offset
+                elif taper_position == "y-":
+                    dy = -taper_offset
+                x0_t = cx + dx
+                y0_t = cy + dy
+                st.caption(
+                    f"ℹ️ In testa la sezione va da x = {x0_t:.1f} a "
+                    f"x = {x0_t + taper_b_top:.1f} cm, "
+                    f"y = {y0_t:.1f} a y = {y0_t + taper_h_top:.1f} cm.")
+                st.caption(f"ℹ️ Il tratto in testa va da z = {z_start:.0f} cm "
+                           f"a z = {H_cm:.0f} cm (sezione costante).")
+
+                if (x0_t < 0 or y0_t < 0
+                        or x0_t + taper_b_top > b_cm
+                        or y0_t + taper_h_top > h_cm):
+                    st.warning("⚠️ La testa fuoriesce dall'impronta della "
+                               "sezione di base del pilastro.")
+
+                st.markdown("---")
+                st.markdown("##### 🔧 Ferri aggiuntivi nella testa")
+                taper_head_anchorage = st.number_input(
+                    "Ancoraggio verticale ferri testa [cm]",
+                    10.0, 500.0,
+                    float(get_param("taper_head_anchorage", 50.0)), 5.0,
+                    key=widget_key("taper_head_anchorage"),
+                    help="Lunghezza di ancoraggio verso il basso (dentro al "
+                         "pilastro) dei ferri aggiunti sul perimetro della "
+                         "testa. I ferri non rientranti nel tratto in testa "
+                         "vengono piegati verso l'interno con arco a 90°.")
+
+                st.markdown("**Lati su cui aggiungere i ferri della testa**")
+                lc1, lc2 = st.columns(2)
+                taper_head_side_xp = lc1.checkbox(
+                    "Lato +X (destra)",
+                    value=bool(get_param("taper_head_side_xp", True)),
+                    key=widget_key("taper_head_side_xp"))
+                taper_head_side_xn = lc2.checkbox(
+                    "Lato −X (sinistra)",
+                    value=bool(get_param("taper_head_side_xn", True)),
+                    key=widget_key("taper_head_side_xn"))
+                lc3, lc4 = st.columns(2)
+                taper_head_side_yp = lc3.checkbox(
+                    "Lato +Y (alto)",
+                    value=bool(get_param("taper_head_side_yp", True)),
+                    key=widget_key("taper_head_side_yp"))
+                taper_head_side_yn = lc4.checkbox(
+                    "Lato −Y (basso)",
+                    value=bool(get_param("taper_head_side_yn", True)),
+                    key=widget_key("taper_head_side_yn"))
+
+                if not (taper_head_side_xp or taper_head_side_xn
+                        or taper_head_side_yp or taper_head_side_yn):
+                    st.warning("⚠️ Nessun lato selezionato: non verranno "
+                               "aggiunti ferri sul perimetro della testa.")
+
+                st.caption(
+                    "ℹ️ I ferri del pilastro che non rientrano nell'impronta "
+                    "della testa vengono piegati a 90° verso l'interno "
+                    "(raggio tipo forche), fino a circa metà larghezza della "
+                    "sezione ristretta. Vengono inoltre aggiunti ferri "
+                    "d'angolo e intermedi sul perimetro della testa (stesso "
+                    "diametro degli intermedi del pilastro sotto) se non "
+                    "coperti da ferri che si prolungano dal basso.")
+
+                if st.session_state.mensole:
+                    for idx, men in enumerate(st.session_state.mensole):
+                        z_men = H_cm - men["quota_cm"]
+                        if z_men > z_start - 0.5:
+                            st.warning(
+                                f"⚠️ La mensola #{idx+1} (lato {men['lato']}) "
+                                f"è a z = {z_men:.0f} cm, dentro il tratto "
+                                f"in testa (inizia a z = {z_start:.0f} cm).")
+        else:
+            taper_b_top = float(get_param("taper_b_top", 50.0))
+            taper_h_top = float(get_param("taper_h_top", 50.0))
+            taper_length = float(get_param("taper_length", 60.0))
+            taper_position = get_param("taper_position", "centered")
+            taper_offset = float(get_param("taper_offset", 0.0))
+            taper_head_anchorage = float(get_param("taper_head_anchorage", 50.0))
+            taper_head_side_xp = bool(get_param("taper_head_side_xp", True))
+            taper_head_side_xn = bool(get_param("taper_head_side_xn", True))
+            taper_head_side_yp = bool(get_param("taper_head_side_yp", True))
+            taper_head_side_yn = bool(get_param("taper_head_side_yn", True))
+
+        st.markdown("---")
+
+        st.markdown("##### 🟩 Forche in testa")
         forks_enabled = st.checkbox(
             "Abilita forche", value=bool(get_param("forks_enabled", False)),
             key=widget_key("forks_enabled"))
@@ -1806,11 +2363,14 @@ with col_left:
                 "Lunghezza di ancoraggio [cm]", 20.0, 400.0,
                 float(get_param("fork_length", 80.0)), 5.0,
                 key=widget_key("fork_length"))
+            if taper_enabled:
+                st.info("ℹ️ Le forche si adattano alla sezione ristretta in testa.")
         else:
             n_forks = 2; fork_dia = 16.0; fork_length = 80.0
 
         st.markdown("---")
-        st.markdown("#### 🟨 Tirafondi (nel pilastro)")
+
+        st.markdown("##### 🟨 Tirafondi (nel pilastro)")
         tie_enabled = st.checkbox(
             "Abilita tirafondi", value=bool(get_param("tie_enabled", False)),
             key=widget_key("tie_enabled"))
@@ -1832,6 +2392,8 @@ with col_left:
                 "Lunghezza di ancoraggio [cm]", 20.0, 500.0,
                 float(get_param("tie_emb", 90.0)), 5.0,
                 key=widget_key("tie_emb"))
+            if taper_enabled:
+                st.info("ℹ️ I tirafondi si adattano alla sezione ristretta in testa.")
         else:
             tie_d = 24.0; tie_off = 12.0; tie_prot = 30.0; tie_emb = 90.0
 
@@ -2257,6 +2819,19 @@ with col_left:
         foundation=Foundation(tipo=tipo_fond,
                               anchorage_length_cm=float(anchorage),
                               bicchiere_depth_cm=float(bicchiere_depth)),
+        taper=Taper(
+            enabled=bool(taper_enabled),
+            b_top_cm=float(taper_b_top),
+            h_top_cm=float(taper_h_top),
+            taper_length_cm=float(taper_length),
+            position=taper_position,
+            offset_cm=float(taper_offset),
+            head_rebar_anchorage_cm=float(taper_head_anchorage),
+            head_rebar_side_xp=bool(taper_head_side_xp),
+            head_rebar_side_xn=bool(taper_head_side_xn),
+            head_rebar_side_yp=bool(taper_head_side_yp),
+            head_rebar_side_yn=bool(taper_head_side_yn),
+        ),
         forks=Forks(enabled=bool(forks_enabled),
                     n_per_side=int(n_forks),
                     diameter_mm=float(fork_dia),
@@ -2275,6 +2850,16 @@ with col_left:
         "b_cm": b_cm, "h_cm": h_cm, "H_cm": H_cm, "cover": cover,
         "tipo_fond": tipo_fond, "anchorage": anchorage,
         "bicchiere_depth": bicchiere_depth,
+        "taper_enabled": taper_enabled,
+        "taper_b_top": taper_b_top, "taper_h_top": taper_h_top,
+        "taper_length": taper_length,
+        "taper_position": taper_position,
+        "taper_offset": taper_offset,
+        "taper_head_anchorage": taper_head_anchorage,
+        "taper_head_side_xp": taper_head_side_xp,
+        "taper_head_side_xn": taper_head_side_xn,
+        "taper_head_side_yp": taper_head_side_yp,
+        "taper_head_side_yn": taper_head_side_yn,
         "d_corner": d_corner, "coupled_corner": coupled_corner,
         "n_int": n_int, "d_int": d_int, "coupled_int": coupled_int,
         "spacing_mode_ui": spacing_mode_ui,
@@ -2347,9 +2932,33 @@ with col_left:
         g2.metric("Profondità h", f"{model.h_cm:.0f} cm")
         g3.metric("Altezza H", f"{model.H_cm:.0f} cm")
         g1, g2, g3 = st.columns(3)
-        g1.metric("Area sezione", f"{q['A_cls_cm2']:.0f} cm²")
+        g1.metric("Area sezione base", f"{q['A_cls_cm2']:.0f} cm²")
         g2.metric("Rapporto H/b", f"{model.H_cm / model.b_cm:.2f}")
         g3.metric("Copriferro", f"{model.cover_cm:.1f} cm")
+
+        if model.taper.enabled:
+            pos_txt = {
+                "centered": "centrata",
+                "x+": f"spostata a destra di {model.taper.offset_cm:.0f} cm",
+                "x-": f"spostata a sinistra di {model.taper.offset_cm:.0f} cm",
+                "y+": f"spostata in alto di {model.taper.offset_cm:.0f} cm",
+                "y-": f"spostata in basso di {model.taper.offset_cm:.0f} cm",
+            }.get(model.taper.position, "—")
+            st.markdown(
+                f"- **Tratto in testa attivo**: sezione costante "
+                f"{model.taper.b_top_cm:.0f} × {model.taper.h_top_cm:.0f} cm, "
+                f"lunghezza {model.taper.taper_length_cm:.0f} cm, {pos_txt}.")
+            st.markdown(
+                f"- **Ancoraggio ferri aggiuntivi testa:** "
+                f"{model.taper.head_rebar_anchorage_cm:.0f} cm")
+            lati_sel = []
+            if model.taper.head_rebar_side_xp: lati_sel.append("+X")
+            if model.taper.head_rebar_side_xn: lati_sel.append("−X")
+            if model.taper.head_rebar_side_yp: lati_sel.append("+Y")
+            if model.taper.head_rebar_side_yn: lati_sel.append("−Y")
+            st.markdown(
+                f"- **Lati armati nella testa:** "
+                f"{', '.join(lati_sel) if lati_sel else 'nessuno'}")
 
         st.markdown("---")
         st.markdown("##### 🏛️ Fondazione")
@@ -2444,14 +3053,16 @@ with col_left:
             fig_pdf = go.Figure()
             op = pdf_3d_opacity
 
-            v, f = box_geometry(0, 0, 0, model.b_cm, model.h_cm, model.H_cm)
-            fig_pdf.add_trace(go.Mesh3d(
-                x=v[:, 0], y=v[:, 1], z=v[:, 2],
-                i=f[:, 0], j=f[:, 1], k=f[:, 2],
-                color="rgb(210,210,215)", opacity=op,
-                name="Calcestruzzo", showlegend=False, hoverinfo='skip',
-                flatshading=True,
-                lighting=dict(ambient=0.9, diffuse=0.3)))
+            concrete_geoms = build_concrete_geometry(model)
+            v, f = merge_geometries(concrete_geoms)
+            if len(v) > 0:
+                fig_pdf.add_trace(go.Mesh3d(
+                    x=v[:, 0], y=v[:, 1], z=v[:, 2],
+                    i=f[:, 0], j=f[:, 1], k=f[:, 2],
+                    color="rgb(210,210,215)", opacity=op,
+                    name="Calcestruzzo", showlegend=False, hoverinfo='skip',
+                    flatshading=True,
+                    lighting=dict(ambient=0.9, diffuse=0.3)))
 
             if model.foundation.tipo == "armatubo":
                 a = model.foundation.anchorage_length_cm
@@ -2595,13 +3206,15 @@ with col_right:
     fig = go.Figure()
 
     if show_concrete:
-        v, f = box_geometry(0, 0, 0, model.b_cm, model.h_cm, model.H_cm)
-        fig.add_trace(go.Mesh3d(
-            x=v[:, 0], y=v[:, 1], z=v[:, 2],
-            i=f[:, 0], j=f[:, 1], k=f[:, 2],
-            color="rgb(210,210,215)", opacity=opacity_cls,
-            name="Calcestruzzo", showlegend=True, hoverinfo='name',
-            flatshading=True, lighting=dict(ambient=0.9, diffuse=0.3)))
+        concrete_geoms = build_concrete_geometry(model)
+        v, f = merge_geometries(concrete_geoms)
+        if len(v) > 0:
+            fig.add_trace(go.Mesh3d(
+                x=v[:, 0], y=v[:, 1], z=v[:, 2],
+                i=f[:, 0], j=f[:, 1], k=f[:, 2],
+                color="rgb(210,210,215)", opacity=opacity_cls,
+                name="Calcestruzzo", showlegend=True, hoverinfo='name',
+                flatshading=True, lighting=dict(ambient=0.9, diffuse=0.3)))
 
     if show_foundation:
         if model.foundation.tipo == "armatubo":
@@ -2638,7 +3251,7 @@ with col_right:
                 fig.add_trace(tr)
 
     if show_column_edges:
-        col_edges = build_box_edges(0, 0, 0, model.b_cm, model.h_cm, model.H_cm)
+        col_edges = build_concrete_edges(model)
         tr = make_edges_trace(col_edges, color="black",
                               name="Bordi pilastro",
                               line_width=column_edges_width)
